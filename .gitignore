@@ -1,0 +1,13 @@
+# Keep runtime caches, datasets, model weights, and secrets out of the project.
+.ipynb_checkpoints/
+__pycache__/
+.venv/
+.env
+.env.*
+kaggle.json
+# Local Kaggle publishing configuration contains the account identifier.
+kernel-metadata.json
+outputs/
+.cache/
+*.keras
+.DS_Store
