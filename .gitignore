@@ -12,3 +12,4 @@ outputs/
 *.keras
 .DS_Store
 *Charter.docx
+AGENTS.md
