@@ -11,3 +11,4 @@ outputs/
 .cache/
 *.keras
 .DS_Store
+*Charter.docx
