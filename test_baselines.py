@@ -8,7 +8,8 @@ import numpy as np
 from PIL import Image as PILImage
 from datasets import Dataset, DatasetDict, Features, ClassLabel, Image, Value
 from baselines import (split_dataset, preprocess_image, cache_pooled_features,
-                       build_head, WarmStableDecay, train_head, evaluate_probabilities)
+                       build_head, WarmStableDecay, train_head, evaluate_probabilities,
+                       prepare_pooled_backbone, pooled_inference_function)
 
 
 class BaselineTests(unittest.TestCase):
@@ -44,16 +45,42 @@ class BaselineTests(unittest.TestCase):
         class SpyBackbone:
             trainable = False
             trainable_weights = []
-            calls = 0
+            def __init__(self):
+                import tensorflow as tf
+                self.calls = tf.Variable(0)
             def __call__(self, x, training):
-                self.calls += 1
-                assert training is False and tuple(x.shape) == (1,32,48,3)
-                return {'pooled': np_to_tensor(np.ones((1,768))), 'feature_map': np_to_tensor(np.ones((1,1,1,768)))}
+                import tensorflow as tf
+                self.calls.assign_add(1)
+                assert training is False
+                tf.debugging.assert_equal(tf.shape(x), [1,32,48,3])
+                return np_to_tensor(np.ones((1,768)))
         spy = SpyBackbone()
         cache, report = cache_pooled_features(spy, {'train': data, 'validation': data, 'test': None})
-        self.assertEqual(spy.calls, 6)
+        self.assertEqual(int(spy.calls.numpy()), 6)
         self.assertEqual(report['test_inference_calls'], 0)
         self.assertEqual(set(cache), {'train','validation'})
+
+    def test_pooled_graph_precision_and_weights(self):
+        # A dynamic toy backbone exercises graph pruning and checkpoint copying.
+        inputs = keras.Input((None, None, 3))
+        spatial = keras.layers.Conv2D(8, 3, padding='same')(inputs)
+        spatial = keras.layers.LayerNormalization()(spatial)
+        pooled = keras.layers.GlobalAveragePooling2D()(spatial)
+        original = keras.Model(inputs, {'pooled': pooled, 'feature_map': spatial})
+        weights = original.get_weights()
+        for mixed in (False, True):
+            prepared = prepare_pooled_backbone(original, mixed_precision=mixed)
+            infer = pooled_inference_function(prepared)
+            self.assertFalse(prepared.trainable_weights)
+            for before, after in zip(weights, prepared.get_weights()):
+                np.testing.assert_array_equal(before, after)
+            for height, width in ((32,48), (48,64)):
+                pixels = np.random.default_rng(42).normal(size=(1,height,width,3)).astype('float32')
+                expected = original(pixels, training=False)['pooled'].numpy()
+                actual = infer(pixels).numpy()
+                self.assertEqual(actual.dtype, np.float32)
+                np.testing.assert_allclose(actual, expected, rtol=0.01, atol=0.001)
+            self.assertEqual(infer.experimental_get_tracing_count(), 1)
 
     def test_schedule_heads_and_checkpoint(self):
         schedule = WarmStableDecay(100)

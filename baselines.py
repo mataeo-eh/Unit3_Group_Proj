@@ -51,16 +51,53 @@ def preprocess_image(rgb_image):
     return ((pixels - mean) / std)[None, ...]
 
 
+def prepare_pooled_backbone(backbone, mixed_precision=False):
+    """Build a frozen pooled-only graph, preserving every pretrained weight.
+
+    Eager Functional execution retains intermediate tensors until the call ends.
+    At native multi-megapixel resolutions the expanded ConvNeXt activations can
+    exhaust a T4 even with batch size one. Graph execution enables tensor-lifetime
+    planning; pooled-only output also prunes the unused spatial-output branch.
+    On GPU, mixed-float16 convolution/dense activations further halve their size.
+    Normalization and global pooling stay float32; all variables stay float32.
+    Heads and the shared RAM cache remain float32. No spatial pixels are changed.
+    """
+    if not isinstance(backbone.output, dict) or set(backbone.output) != {'pooled', 'feature_map'}:
+        raise ValueError('Expected the Tiny backbone pooled/feature_map output contract.')
+    pooled_model = keras.Model(backbone.inputs, backbone.output['pooled'], name='frozen_pooled_backbone')
+    if mixed_precision:
+        def clone_layer(layer):
+            # Documented clone_function receives each non-Input layer instance.
+            # Its config is copied explicitly; no checkpoint weights are modified.
+            config = layer.get_config()
+            config['dtype'] = 'float32' if isinstance(layer, (keras.layers.LayerNormalization, keras.layers.GlobalAveragePooling2D)) else 'mixed_float16'
+            return layer.__class__.from_config(config)
+        mixed_model = keras.models.clone_model(pooled_model, clone_function=clone_layer)
+        mixed_model.set_weights(pooled_model.get_weights())
+        pooled_model = mixed_model
+    pooled_model.trainable = False
+    assert not pooled_model.trainable_weights
+    return pooled_model
+
+
+def pooled_inference_function(pooled_model):
+    """One dynamic-shape graph for all native image sizes, returning float32."""
+    @tf.function(input_signature=[tf.TensorSpec((1, None, None, 3), tf.float32)])
+    def infer(pixels):
+        return tf.cast(pooled_model(pixels, training=False), tf.float32)
+    return infer
+
+
 def cache_pooled_features(backbone, splits):
     """One extraction pass, one inference per train/dev image, shared by all heads.
 
-    The saved model returns exactly 'pooled' (N,768) and 'feature_map'
-    (N,H',W',768). Spatial output is checked then discarded to conserve RAM.
+    The prepared frozen model returns only pooled (N,768), pruning spatial output.
     Single-image inference supports mixed native sizes without padding or resize.
     Dataset rows supply image, label, row_id; other columns are unused.
     """
     backbone.trainable = False
     assert not backbone.trainable_weights
+    infer = pooled_inference_function(backbone)
     cache, shapes, calls = {}, {}, 0
     for name in ('train', 'validation'):
         data = splits[name]
@@ -68,18 +105,14 @@ def cache_pooled_features(backbone, splits):
         labels = np.asarray(data['label'], dtype=np.int32)
         for i, row in enumerate(data):
             pixels = preprocess_image(row['image'])
-            output = backbone(pixels, training=False)
-            if set(output) != {'pooled', 'feature_map'}:
-                raise ValueError(f'Unexpected backbone outputs: {list(output)}')
-            pooled, spatial = output['pooled'], output['feature_map']
+            pooled = infer(pixels)
             assert tuple(pooled.shape) == (1, 768)
-            assert len(spatial.shape) == 4 and spatial.shape[-1] == 768
             tf.debugging.assert_all_finite(pooled, 'Non-finite pooled features')
             vectors[i] = pooled.numpy()[0]
             shape = str(tuple(pixels.shape[1:3]))
             shapes[shape] = shapes.get(shape, 0) + 1
             calls += 1
-            if (i + 1) % 100 == 0 or i + 1 == len(data):
+            if i == 0 or (i + 1) % 25 == 0 or i + 1 == len(data):
                 print(f'{name}: cached {i + 1}/{len(data)}', flush=True)
         cache[name] = (vectors, labels)
     assert calls == len(splits['train']) + len(splits['validation'])

@@ -6,7 +6,10 @@ features. Modeling and metrics use TensorFlow/Keras; no PyTorch is used.
 
 Images keep their native resolution. Preprocessing converts RGB pixels to 0–1
 and applies ImageNet mean/std normalization, without resizing, cropping, or
-padding. The exact saved backbone has input `(None, None, None, 3)` and returns
+padding. Frozen extraction uses a pooled-only TensorFlow graph. GPU convolution
+and dense activations use mixed float16; normalization, pooling, pretrained
+variables, cached vectors, and heads remain float32 to reduce native-image memory.
+The exact saved backbone has input `(None, None, None, 3)` and returns
 `pooled` `(N, 768)` and `feature_map` `(N, H', W', 768)`.
 
 ## Experiment design
@@ -49,15 +52,22 @@ python build_notebook.py
 python -m unittest test_baselines.py
 ```
 
-Regression checks cover native pixels, cache call counts/test exclusion,
+Regression checks cover graph reuse across resolutions, unchanged frozen weights,
+mixed-precision numerical agreement, native pixels, cache call counts/test exclusion,
 stratification, honoring author splits, WSD boundaries/serialization, parameter
 counts, checkpoint reloads, and majority metrics.
 
 ## Run on Kaggle
 
 Enable Internet and attach `mataeoanderson/dinov3-convnext/keras/tiny/1`. The
-notebook pins TensorFlow/Keras versions matching the model serialization, the
-published dataset conversion revision, and model version. A GPU accelerates the
+notebook pins TensorFlow 2.20.0 and Keras 3.15.1, validated against the saved
+model. Protobuf 5.29.5 and Hugging Face Hub 1.31.0 satisfy Kaggle consumers;
+BigQuery Storage 2.35.0, Gym 0.26.2, and Decorator 5.3.1 repair the remaining reported dependency
+conflicts. Setup requires `pip check` to pass before importing libraries. The
+unused Dopamine, Google Colab, and legacy MoviePy distributions are removed first
+because their
+requirements conflict with Kaggle's RL and server packages. The notebook pins the
+published dataset conversion revision and model version. A GPU accelerates the
 single native-resolution feature-extraction pass.
 
 With an authenticated Kaggle CLI and local `kernel-metadata.json`:
@@ -79,6 +89,16 @@ counts, comparison CSV, metrics JSON, and plots. Trained heads remain on Kaggle;
 the requested local deliverable is the executed notebook, named
 `kaggle_results/Notebook_finished.ipynb` when the run finishes during monitoring.
 The ordinary CLI `kernels pull` retrieves source without executed cell outputs.
+Use the guarded downloader from this directory instead:
+
+```sh
+python download_finished_notebook.py --kernel OWNER/SLUG --version N
+```
+
+It requires Kaggle status COMPLETE and checks every code cell for execution and
+error outputs before saving. Failed/incomplete runs must be fixed and relaunched;
+they are never committed as finished notebooks. The failed version-4 archive was
+removed from the current repository tree after its GPU OOM was diagnosed.
 
 ## References
 

@@ -9,6 +9,35 @@ import nbformat
 ROOT = Path(__file__).resolve().parent
 notebook = nbformat.read(ROOT / 'Notebook.ipynb', as_version=4)
 cells = notebook.cells[:10]
+cells[1].source = '''## 1. Compatible dependencies and configuration
+
+Keep TensorFlow 2.20, required by Kaggle's existing TensorFlow add-ons, while
+using Keras 3.15.1 to read the saved artifact. Pin Protobuf 5.29.5 and Hugging
+Face Hub 1.31.0 within all reported consumers' supported ranges. Install the
+missing BigQuery Storage dependency and compatible Gym version. Run `pip check`
+before imports: dependency conflicts fail setup instead of being ignored.
+Remove unused Dopamine (whose Gym requirement conflicts with Gymnax) and Google
+Colab (whose pandas/Jupyter requirements conflict with Kaggle's server stack).
+Remove unused legacy MoviePy, whose Decorator requirement conflicts with MNE.
+'''
+cells[2].source = '''# Install compatible pins before importing TensorFlow or dataset libraries.
+import subprocess
+import sys
+
+# These unused preinstalled distributions impose mutually incompatible runtime
+# constraints; removing them avoids changing Kaggle's pandas/Jupyter server.
+subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y',
+                'dopamine-rl', 'google-colab', 'moviepy'], check=True)
+requirements = [
+    'tensorflow==2.20.0', 'keras==3.15.1', 'datasets==5.1.0',
+    'kagglehub==1.0.2', 'Pillow==12.3.0', 'protobuf==5.29.5',
+    'huggingface-hub==1.31.0', 'google-cloud-bigquery-storage==2.35.0',
+    'gym==0.26.2', 'decorator==5.3.1',
+]
+subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet',
+                '--disable-pip-version-check', *requirements], check=True)
+subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
+'''
 cells[0].source = '''# Unit 3 group project: TrashNet + DINOv3 ConvNeXt Tiny
 
 Compare frozen native-resolution global pooled features with a linear softmax
@@ -19,6 +48,11 @@ cells[3].source = cells[3].source.replace('IMAGE_SIZE = (224, 224)\n', '')
 cells[3].source += '\nSEED = 42\nBATCH_SIZE = 64\nMAX_EPOCHS = 50\nPATIENCE = 5\nkeras.utils.set_random_seed(SEED)\n'
 # Avoid duplicating configuration when regenerating an already built notebook.
 config = cells[3].source.split('\nSEED = 42')[0]
+if "set_memory_growth" not in config:
+    config = config.replace('import tensorflow as tf', '''import tensorflow as tf
+# Configure allocation before loading weights or creating any GPU tensors.
+for gpu in tf.config.list_physical_devices('GPU'):
+    tf.config.experimental.set_memory_growth(gpu, True)''')
 cells[3].source = config + '\nSEED = 42\nBATCH_SIZE = 64\nMAX_EPOCHS = 50\nPATIENCE = 5\nkeras.utils.set_random_seed(SEED)\n'
 cells += [nbformat.v4.new_markdown_cell('''## 5. Reusable experiment helpers
 
@@ -57,7 +91,20 @@ One forward pass per train/validation image, performed before either head trains
 Both heads share the same float32 RAM cache. Spatial maps are discarded. The
 backbone is fully frozen and called with `training=False`. No test feature cache
 is created, and the former extra sample forward pass has been removed.
-'''), nbformat.v4.new_code_cell('''feature_cache, extraction_report = cache_pooled_features(backbone, splits)
+
+Use a pooled-only TensorFlow graph to avoid retaining eager intermediate maps.
+GPU convolution/dense activations use mixed float16; pretrained variables,
+normalization, global pooling, cached vectors, and classifier heads stay float32.
+This reduces memory without resizing or changing any pretrained weight.
+'''), nbformat.v4.new_code_cell('''import gc
+
+use_mixed_precision = bool(tf.config.list_physical_devices('GPU'))
+backbone = prepare_pooled_backbone(backbone, mixed_precision=use_mixed_precision)
+gc.collect()
+print('Backbone execution: pooled-only graph | Mixed activations:', use_mixed_precision)
+print('Backbone input:', backbone.input_shape, '| Output:', backbone.output_shape)
+feature_cache, extraction_report = cache_pooled_features(backbone, splits)
+extraction_report['mixed_precision_activations'] = use_mixed_precision
 (OUTPUT_DIR / 'feature_extraction.json').write_text(json.dumps(extraction_report, indent=2))
 '''), nbformat.v4.new_markdown_cell('''## 8. Train linear softmax, then lightweight ANN
 
