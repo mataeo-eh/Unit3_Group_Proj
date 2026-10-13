@@ -145,17 +145,23 @@ class WarmStableDecay(keras.optimizers.schedules.LearningRateSchedule):
         return {'total_steps': self.total_steps, 'peak_lr': self.peak_lr}
 
 
-def build_head(feature_dim, num_classes, hidden_units=(), name='linear'):
+def build_head(feature_dim, num_classes, hidden_units=(), name='linear', dropout_rates=()):
     """Dense softmax classifier for any fixed-width feature representation.
 
     A spatial experiment can supply vectors of another width or add its own
     spatial aggregation before this head. The default is multinomial logistic
-    regression; hidden_units=(8,) adds one small GELU layer.
+    regression; hidden_units=(8,) adds one small GELU layer. Optional dropout
+    rates apply after the corresponding hidden layers, only during training.
     """
+    if len(dropout_rates) > len(hidden_units):
+        raise ValueError('Dropout rates must correspond to existing hidden layers.')
     inputs = keras.Input(shape=(feature_dim,), name='features')
     x = inputs
     for i, units in enumerate(hidden_units):
         x = keras.layers.Dense(units, activation='gelu', name=f'hidden_{i}')(x)
+        if i < len(dropout_rates):
+            # Keras fit enables dropout; validation/predict keep every unit active.
+            x = keras.layers.Dropout(dropout_rates[i], name=f'dropout_{i}')(x)
     probabilities = keras.layers.Dense(num_classes, activation='softmax', name='probabilities')(x)
     return keras.Model(inputs, probabilities, name=name)
 
@@ -179,7 +185,8 @@ def train_head(spec, cache, num_classes, output_dir, batch_size=64, epochs=50, p
     keras.utils.set_random_seed(seed)
     x, y = cache['train']
     dev_x, dev_y = cache['validation']
-    model = build_head(x.shape[1], num_classes, spec['hidden_units'], spec['name'])
+    model = build_head(x.shape[1], num_classes, spec['hidden_units'], spec['name'],
+                       dropout_rates=spec.get('dropout_rates', ()))
     schedule = WarmStableDecay(epochs * math.ceil(len(y) / batch_size), spec['learning_rate']) if spec['wsd'] else spec['learning_rate']
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=schedule),
                   loss=keras.losses.SparseCategoricalCrossentropy(), metrics=['accuracy'])

@@ -89,15 +89,26 @@ class BaselineTests(unittest.TestCase):
         self.assertAlmostEqual(float(restored(99)), float(schedule(99)))
         self.assertEqual(build_head(768,6).count_params(), 4614)
         self.assertEqual(build_head(768,6,(8,)).count_params(), 6206)
+        # The additional capacity experiment must keep its parameter budget and
+        # dropout placement across checkpoint serialization and final scoring.
+        larger = build_head(768,6,(40,24), dropout_rates=(.1,.1))
+        self.assertEqual(larger.count_params(), 31894)
+        self.assertEqual([layer.rate for layer in larger.layers if isinstance(layer, keras.layers.Dropout)], [.1,.1])
+        probe = np.ones((2,768), dtype='float32')
+        np.testing.assert_array_equal(larger(probe, training=False), larger(probe, training=False))
+        self.assertFalse(np.array_equal(larger(probe, training=True), larger(probe, training=True)))
         rng = np.random.default_rng(42)
         x = rng.normal(size=(60, 8)).astype('float32')
         y = np.arange(60, dtype='int32') % 3
         cache = {'train': (x[:45],y[:45]), 'validation': (x[45:],y[45:])}
         with tempfile.TemporaryDirectory() as directory:
-            for hidden, wsd in [((),False),((8,),True)]:
-                head, metadata = train_head({'name': f'head_{wsd}', 'hidden_units': hidden, 'learning_rate': .001, 'wsd': wsd},
+            for hidden, wsd, dropout in [((),False,()),((8,),True,()),((40,24),True,(.1,.1))]:
+                name = f'head_{len(hidden)}'
+                head, metadata = train_head({'name': name, 'hidden_units': hidden,
+                    'dropout_rates': dropout, 'learning_rate': .001, 'wsd': wsd},
                     cache, 3, directory, epochs=3, batch_size=15)
-                self.assertTrue((Path(directory)/f'head_{wsd}_best.keras').exists())
+                self.assertTrue((Path(directory)/f'{name}_best.keras').exists())
+                self.assertEqual([layer.rate for layer in head.layers if isinstance(layer, keras.layers.Dropout)], list(dropout))
                 scores = evaluate_probabilities(y[45:], head(x[45:],training=False).numpy(), ['a','b','c'])
                 self.assertAlmostEqual(scores['loss'], min(metadata['history']['val_loss']), places=5)
                 self.assertEqual(metadata['epochs_run'], len(metadata['history']['loss']))

@@ -23,6 +23,11 @@ Remove unused legacy MoviePy, whose Decorator requirement conflicts with MNE.
 cells[2].source = '''# Install compatible pins before importing TensorFlow or dataset libraries.
 import subprocess
 import sys
+import time
+
+# Include dependency setup, extraction, training, scoring, and plots in runtime.
+# perf_counter measures elapsed execution time; Kaggle queue time is excluded.
+notebook_started = time.perf_counter()
 
 # These unused preinstalled distributions impose mutually incompatible runtime
 # constraints; removing them avoids changing Kaggle's pandas/Jupyter server.
@@ -41,7 +46,8 @@ subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
 cells[0].source = '''# Unit 3 group project: TrashNet + DINOv3 ConvNeXt Tiny
 
 Compare frozen native-resolution global pooled features with a linear softmax
-classifier, an 8-unit GELU ANN, and a training-majority baseline. Test images are
+classifier, an 8-unit GELU ANN, a larger ANN with dropout, and a training-majority
+baseline. Test images are
 held out for the group's eventual single final model. All modeling uses TensorFlow/Keras.
 '''
 cells[3].source = cells[3].source.replace('IMAGE_SIZE = (224, 224)\n', '')
@@ -87,8 +93,8 @@ print('Split sizes:', {name: len(data) for name, data in splits.items()})
      'row_ids': {name: list(data['row_id']) for name, data in splits.items()}}, indent=2))
 '''), nbformat.v4.new_markdown_cell('''## 7. Extract native-resolution pooled features once
 
-One forward pass per train/validation image, performed before either head trains.
-Both heads share the same float32 RAM cache. Spatial maps are discarded. The
+One forward pass per train/validation image, performed before any head trains.
+All three heads share the same float32 RAM cache. Spatial maps are discarded. The
 backbone is fully frozen and called with `training=False`. No test feature cache
 is created, and the former extra sample forward pass has been removed.
 
@@ -106,20 +112,25 @@ print('Backbone input:', backbone.input_shape, '| Output:', backbone.output_shap
 feature_cache, extraction_report = cache_pooled_features(backbone, splits)
 extraction_report['mixed_precision_activations'] = use_mixed_precision
 (OUTPUT_DIR / 'feature_extraction.json').write_text(json.dumps(extraction_report, indent=2))
-'''), nbformat.v4.new_markdown_cell('''## 8. Train linear softmax, then lightweight ANN
+'''), nbformat.v4.new_markdown_cell('''## 8. Train linear softmax, then small and larger ANNs
 
-Both use batch size 64, at most 50 epochs, and strict validation-loss improvement
+All three use batch size 64, at most 50 epochs, and strict validation-loss improvement
 with patience 5. Best checkpoints are saved at each improving epoch and reloaded
 for final scoring. All epoch losses, including patience epochs, remain available.
 
-The linear head is multinomial logistic regression (768 → 6 softmax). The ANN is
-768 → 8 GELU → 6 softmax: 6,206 parameters versus 4,614 for the linear head. Adam
-uses 0.001 for both; the ANN uses linear WSD across planned optimizer updates:
+The linear head is multinomial logistic regression (768 → 6 softmax), with 4,614
+parameters. The small ANN is 768 → 8 GELU → 6 softmax, with 6,206 parameters.
+The larger ANN is 768 → 40 GELU → dropout(0.1) → 24 GELU → dropout(0.1) → 6
+softmax, with 31,894 parameters. This tests increased capacity with regularization;
+capacity and dropout change together, so this is not a capacity-only ablation.
+Adam uses 0.001 for all; both ANNs use linear WSD across planned optimizer updates:
 10% warmup, 70% stable, 20% decay to 1% of peak. Early stopping can end before decay.
 Add future configurations to `RUN_SPECS` to reuse training, evaluation, and plots.
 '''), nbformat.v4.new_code_cell('''RUN_SPECS = [
     {'name': 'logistic_regression', 'hidden_units': (), 'learning_rate': 0.001, 'wsd': False},
     {'name': 'tiny_ann', 'hidden_units': (8,), 'learning_rate': 0.001, 'wsd': True},
+    {'name': 'larger_ann', 'hidden_units': (40, 24), 'dropout_rates': (0.1, 0.1),
+     'learning_rate': 0.001, 'wsd': True},
 ]
 trained_heads, histories = {}, {}
 for spec in RUN_SPECS:
@@ -170,6 +181,12 @@ validation loss rises; this behavior is not guaranteed in five patience epochs.
 '''), nbformat.v4.new_code_cell('''plot_reports(results, histories, class_names, OUTPUT_DIR)
 print('Saved artifacts:', [path.name for path in sorted(OUTPUT_DIR.iterdir())])
 print('Finished. Test inference and scoring calls: 0.')
+# Save and display full execution time so the downloaded notebook carries it.
+elapsed_seconds = time.perf_counter() - notebook_started
+runtime_report = {'execution_seconds': elapsed_seconds,
+                  'execution_minutes': elapsed_seconds / 60., 'queue_time_included': False}
+(OUTPUT_DIR / 'notebook_runtime.json').write_text(json.dumps(runtime_report, indent=2))
+print(f'Notebook execution time: {elapsed_seconds / 60.:.2f} minutes ({elapsed_seconds:.1f} seconds).')
 ''')]
 notebook.cells = cells
 nbformat.validate(notebook)

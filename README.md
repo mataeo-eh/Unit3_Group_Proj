@@ -1,7 +1,7 @@
 # Unit 3 group project
 
 `Notebook.ipynb` preserves the TrashNet loading, class display, and example image,
-then trains two TensorFlow/Keras baselines on frozen DINOv3 ConvNeXt Tiny pooled
+then trains three TensorFlow/Keras heads on frozen DINOv3 ConvNeXt Tiny pooled
 features. Modeling and metrics use TensorFlow/Keras; no PyTorch is used.
 
 Images keep their native resolution. Preprocessing converts RGB pixels to 0–1
@@ -17,15 +17,19 @@ The exact saved backbone has input `(None, None, None, 3)` and returns
 - The pinned published Parquet conversion has one training split. Seeded,
   stratified splits allocate 70% train, 15% validation, and 15% held-out test.
   `split_dataset` also honors existing author splits when supplied a DatasetDict.
-- Extract each train/validation image once before training. Both heads share
+- Extract each train/validation image once before training. All heads share
   float32 pooled vectors in RAM. The fully frozen backbone uses inference mode.
   Test images are never inferred, cached, or scored.
 - Linear multinomial logistic regression: Dense(6, softmax), 4,614 parameters.
 - Small ANN: Dense(8, GELU) → Dense(6, softmax), 6,206 parameters.
+- Larger ANN: Dense(40, GELU) → Dropout(0.1) → Dense(24, GELU) → Dropout(0.1)
+  → Dense(6, softmax), 31,894 parameters. Dropout applies only during training.
+  This changes capacity and regularization together, rather than isolating
+  parameter count as the only experimental variable.
 - Train heads sequentially with batch size 64, Adam, at most 50 epochs, and
   validation-loss early stopping with patience 5. Save every strictly improving
   checkpoint and reload the best checkpoint for final reports.
-- ANN learning rate: peak 0.001, 10% linear warmup, 70% stable, 20% linear decay
+- Both ANN learning rates: peak 0.001, 10% linear warmup, 70% stable, 20% linear decay
   to 1% of peak across planned batches. Early stopping may precede decay.
 - The majority baseline always predicts the training-majority class. Its hard
   one-hot probabilities use Keras epsilon clipping for finite reported loss.
@@ -36,6 +40,10 @@ ROC/PR plots. AUC uses Keras interpolation with 2,000 thresholds. All completed
 epoch losses remain in the histories and learning curves, including patience
 epochs. Validation is used for model comparison; training scores are diagnostic.
 The test set is reserved for the group's eventual single selected model.
+
+The final cell prints execution time and saves `notebook_runtime.json` on Kaggle.
+Timing includes dependency setup, extraction, training, scoring, and plotting;
+it excludes queue time and starts at the first code cell.
 
 ## Reuse and verification
 
