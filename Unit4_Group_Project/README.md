@@ -68,15 +68,20 @@ writes `trashnet_dinov3_convnext_tiny_features/`:
 
 The split is the same seed-42 stratified 70/15/15 split, and row order matches
 `metadata.csv`. The folder is published as the public Kaggle dataset
-[`mataeoanderson/trashnet-dinov3-convnext-tiny-features`](https://www.kaggle.com/datasets/mataeoanderson/trashnet-dinov3-convnext-tiny-features).
-Later notebooks attach it in place of the images and load arrays with
-`np.load`, so they skip the backbone entirely. The dataset's README has a
-loading snippet.
+**TrashNet DINOv3 ConvNeXt-Tiny Features**. Public access to version 1 was
+verified without credentials on November 8, 2026.
+
+See [Dataset access and notebook inputs](DATASET_ACCESS.md) for instructions
+for attaching it to new, copied, or revised notebooks. Later notebooks can
+load the saved arrays with `np.load` and skip the backbone entirely. The
+current `training/Unit4_Training.ipynb` still extracts features from images;
+attaching the feature dataset alone does not switch that notebook to cached
+features. The dataset's README has a loading snippet.
 
 To refresh the dataset after re-running the notebook:
 
 ```sh
-kaggle kernels output mataeoanderson/unit4-trashnet-dinov3-feature-extraction -p <dir>
+kaggle kernels output <owner>/<extraction-notebook-slug> -p <dir>
 kaggle datasets version -p <dir>/trashnet_dinov3_convnext_tiny_features -m "<message>"
 ```
 
@@ -95,7 +100,8 @@ They also uninstall several unused packages: Dopamine, Colab, MoviePy and
 RAPIDS cudf/dask-cudf/cuml. The notebook markdown explains each change.
 
 Both kernels need Internet (for the dependency pins) and attach two inputs:
-`feyzazkefe/trashnet` and `mataeoanderson/dinov3-convnext/keras/tiny/1`.
+the original TrashNet image dataset and the frozen DINOv3 ConvNeXt-Tiny
+Keras model. Use the local publishing metadata for their exact handles.
 The notebooks raise an error unless exactly two GPUs are visible.
 `kernel-metadata.json` is Git-ignored because it holds the account id.
 Download finished runs with `../download_finished_notebook.py`, which checks
